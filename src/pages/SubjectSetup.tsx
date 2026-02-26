@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Plus, ArrowRight, ArrowLeft } from "lucide-react";
@@ -7,6 +7,7 @@ import FileUploadZone from "@/components/FileUploadZone";
 import SubjectCard from "@/components/SubjectCard";
 import { useAppStore, Subject } from "@/store/app-store";
 import { parseFile, ParsedNote } from "@/lib/pdf-parser";
+import { saveSubjectToFirestore, loadSubjectsFromFirestore, deleteSubjectFromFirestore } from "@/lib/firestore-service";
 import { toast } from "sonner";
 
 const SUBJECT_COLORS = [
@@ -23,6 +24,19 @@ const SubjectSetup: React.FC = () => {
   const [tempFiles, setTempFiles] = useState<File[]>([]);
   const [parsing, setParsing] = useState(false);
 
+  // Load subjects from Firestore on mount
+  useEffect(() => {
+    if (subjects.length === 0) {
+      loadSubjectsFromFirestore()
+        .then((loaded) => {
+          if (loaded.length > 0) {
+            setSubjects(loaded);
+          }
+        })
+        .catch((err) => console.warn("Firestore load failed (config may be missing):", err));
+    }
+  }, []);
+
   const handleAddSubject = () => {
     if (!newSubjectName.trim()) {
       toast.error("Enter a subject name");
@@ -38,15 +52,21 @@ const SubjectSetup: React.FC = () => {
     }
 
     const id = crypto.randomUUID();
-    addSubject({
+    const newSubject: Subject = {
       id,
       name: newSubjectName.trim(),
       color: SUBJECT_COLORS[subjects.length],
       notes: [],
       files: [],
-    });
+    };
+    addSubject(newSubject);
     setNewSubjectName("");
     setUploadingFor(id);
+    
+    // Save to Firestore
+    saveSubjectToFirestore(newSubject).catch((err) =>
+      console.warn("Firestore save failed:", err)
+    );
   };
 
   const handleUploadFiles = async () => {
@@ -69,6 +89,16 @@ const SubjectSetup: React.FC = () => {
       setTempFiles([]);
       setUploadingFor(null);
       toast.success("Notes uploaded successfully!");
+      
+      // Persist updated subject to Firestore
+      const updatedSubject = subjects.find((s) => s.id === uploadingFor);
+      if (updatedSubject) {
+        saveSubjectToFirestore({
+          ...updatedSubject,
+          notes: [...updatedSubject.notes, ...parsed],
+          files: [...updatedSubject.files, ...tempFiles],
+        }).catch((err) => console.warn("Firestore save failed:", err));
+      }
     } catch (err) {
       toast.error("Failed to parse files. Please try again.");
       console.error(err);
@@ -83,9 +113,14 @@ const SubjectSetup: React.FC = () => {
       setUploadingFor(null);
       setTempFiles([]);
     }
+    // Delete from Firestore
+    deleteSubjectFromFirestore(id).catch((err) =>
+      console.warn("Firestore delete failed:", err)
+    );
   };
 
   const allReady = subjects.length === 3 && subjects.every((s) => s.notes.length > 0);
+  const canProceed = subjects.length > 0 && subjects.some((s) => s.notes.length > 0);
 
   return (
     <div className="min-h-screen bg-background pattern-diagonal">
@@ -192,17 +227,20 @@ const SubjectSetup: React.FC = () => {
               </div>
             )}
 
-            {allReady && (
+            {canProceed && (
               <motion.div
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="flat-card bg-success/10 border-success/30"
+                className={`flat-card ${allReady ? 'bg-success/10 border-success/30' : 'bg-primary/10 border-primary/30'}`}
               >
-                <h2 className="font-display text-subheading font-bold mb-2 text-success">
-                  ✅ All Set!
+                <h2 className="font-display text-subheading font-bold mb-2">
+                  {allReady ? "✅ All Set!" : "🚀 Ready to Go!"}
                 </h2>
                 <p className="text-sm text-muted-foreground mb-4">
-                  All 3 subjects have notes uploaded. Ready to study!
+                  {allReady
+                    ? "All 3 subjects have notes uploaded. Ready to study!"
+                    : `${subjects.filter(s => s.notes.length > 0).length} subject(s) ready. You can add more later.`
+                  }
                 </p>
                 <FlatButton
                   onClick={() => navigate("/chat")}
